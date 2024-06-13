@@ -1,0 +1,44 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Output of the 'go' command
+*.out
+
+# Temporary files
+*.log
+*.tmp
+*.swp
+*.bak
+*.old
+
+# Directories
+/vendor/
+/bin/
+/obj/
+/dist/
+**/build/
+**/store/
+
+# Dependency directories
+vendor/
+
+# IDE/editor specific files
+.vscode/
+.idea/
+*.iml
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Environment-specific files
+.env
+.env.local
+.env.*.local
+
+# Go module files
+**/go.sum
