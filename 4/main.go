@@ -6,7 +6,6 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 	"log"
 	"sync"
-	"time"
 )
 
 type server struct {
@@ -52,18 +51,13 @@ func (s *server) handleAdd(message maelstrom.Message) error {
 
 			dst := node
 			go func() {
-				ctx, cancel := context.WithTimeout(s.ctx, time.Second)
 				msg := map[string]any{
 					"type":  "gossip",
 					"delta": val,
 				}
-				defer cancel()
-				for {
-					_, err := s.node.SyncRPC(ctx, dst, msg)
 
-					if err == nil {
-						break
-					}
+				if err := s.node.Send(dst, msg); err != nil {
+					return
 				}
 			}()
 		}
@@ -124,9 +118,7 @@ func (s *server) handleGossip(message maelstrom.Message) error {
 		return err
 	}
 
-	return s.node.Reply(message, map[string]any{
-		"type": "gossip_ok",
-	})
+	return nil
 }
 
 type initMessage struct {
