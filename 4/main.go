@@ -112,7 +112,7 @@ func (s *server) handleGossip(message maelstrom.Message) error {
 		return err
 	}
 
-	err = s.kv.CompareAndSwap(context.Background(), s.node.ID(), prevValue, prevValue+body.Delta, true)
+	err = s.kv.Write(context.Background(), s.node.ID(), prevValue+body.Delta)
 
 	if err != nil {
 		return err
