@@ -85,18 +85,26 @@ func (s *server) handlePoll(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	msgs := make(map[string][][]int)
 
 	for key, minOffset := range body.Offsets {
-		for _, entry := range s.logs[key] {
-			if entry.offset < minOffset {
-				continue
+		for offset := minOffset; ; offset++ {
+			offsetStr := fmt.Sprintf("%d", offset)
+			val, err := s.kv.ReadInt(context.Background(), "entry-"+key+"-"+offsetStr)
+
+			if err != nil {
+				var rpcErr *maelstrom.RPCError
+				errors.As(err, &rpcErr)
+
+				if rpcErr.Code == maelstrom.KeyDoesNotExist {
+					break
+				} else {
+					return err
+				}
 			}
 
-			msgs[key] = append(msgs[key], []int{entry.offset, entry.message})
+			msgs[key] = append(msgs[key], []int{offset, val})
+
 		}
 	}
 
