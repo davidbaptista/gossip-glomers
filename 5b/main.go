@@ -125,19 +125,10 @@ func (s *server) handleCommitOffsets(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for key, maxOffset := range body.Offsets {
-		for _, entry := range s.logs[key] {
-			if entry.offset < maxOffset {
-				continue
-			}
-			if entry.offset > maxOffset {
-				break
-			}
-
-			s.commitedOffsets[key] = entry.offset
+		err := s.kv.Write(context.Background(), "committed-"+key, maxOffset)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -157,15 +148,15 @@ func (s *server) handleListCommitedOffsets(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	commitedOffsets := make(map[string]int)
 
 	for _, key := range body.Keys {
-		if offset, ok := s.commitedOffsets[key]; ok {
-			commitedOffsets[key] = offset
+		offset, err := s.kv.ReadInt(context.Background(), "commited-"+key)
+
+		if err != nil {
+			offset = 0
 		}
+		commitedOffsets[key] = offset
 	}
 
 	return s.node.Reply(request, map[string]any{
