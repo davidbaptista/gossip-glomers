@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
-	"sync"
 )
 
 type entry struct {
@@ -12,11 +14,8 @@ type entry struct {
 }
 
 type server struct {
-	node            *maelstrom.Node
-	mu              sync.RWMutex
-	logs            map[string][]entry
-	commitedOffsets map[string]int
-	lastOffsets     map[string]int
+	node *maelstrom.Node
+	kv   *maelstrom.KV
 }
 
 type sendRequest struct {
@@ -32,18 +31,41 @@ func (s *server) handleSend(message maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	offset, err := s.kv.ReadInt(context.Background(), "last-"+body.Key)
 
-	offset, ok := s.lastOffsets[body.Key]
-	if !ok {
-		offset = 0
+	if err != nil {
+		var rpcError *maelstrom.RPCError
+		errors.As(err, &rpcError)
+		if rpcError.Code == maelstrom.KeyDoesNotExist {
+			offset = 0
+		} else {
+			return err
+		}
 	} else {
-		offset = offset + 1
+		offset++
 	}
 
-	s.logs[body.Key] = append(s.logs[body.Key], entry{offset: offset, message: body.Msg})
-	s.lastOffsets[body.Key] = offset
+	for {
+		err := s.kv.CompareAndSwap(context.Background(), "last-"+body.Key, offset-1, offset, true)
+
+		if err == nil {
+			break
+		}
+
+		var rpcErr *maelstrom.RPCError
+		errors.As(err, &rpcErr)
+
+		if rpcErr.Code == maelstrom.KeyDoesNotExist {
+			offset++
+		} else {
+			return err
+		}
+	}
+
+	offsetStr := fmt.Sprintf("%d", offset)
+	if err := s.kv.Write(context.Background(), "entry-"+body.Key+"-"+offsetStr, body.Msg); err != nil {
+		return err
+	}
 
 	return s.node.Reply(message, map[string]any{
 		"type":   "send_ok",
@@ -63,18 +85,26 @@ func (s *server) handlePoll(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	msgs := make(map[string][][]int)
 
 	for key, minOffset := range body.Offsets {
-		for _, entry := range s.logs[key] {
-			if entry.offset < minOffset {
-				continue
+		for offset := minOffset; ; offset++ {
+			offsetStr := fmt.Sprintf("%d", offset)
+			val, err := s.kv.ReadInt(context.Background(), "entry-"+key+"-"+offsetStr)
+
+			if err != nil {
+				var rpcErr *maelstrom.RPCError
+				errors.As(err, &rpcErr)
+
+				if rpcErr.Code == maelstrom.KeyDoesNotExist {
+					break
+				} else {
+					return err
+				}
 			}
 
-			msgs[key] = append(msgs[key], []int{entry.offset, entry.message})
+			msgs[key] = append(msgs[key], []int{offset, val})
+
 		}
 	}
 
@@ -95,19 +125,10 @@ func (s *server) handleCommitOffsets(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	for key, maxOffset := range body.Offsets {
-		for _, entry := range s.logs[key] {
-			if entry.offset < maxOffset {
-				continue
-			}
-			if entry.offset > maxOffset {
-				break
-			}
-
-			s.commitedOffsets[key] = entry.offset
+		err := s.kv.Write(context.Background(), "committed-"+key, maxOffset)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -127,15 +148,15 @@ func (s *server) handleListCommitedOffsets(request maelstrom.Message) error {
 		return err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	commitedOffsets := make(map[string]int)
 
 	for _, key := range body.Keys {
-		if offset, ok := s.commitedOffsets[key]; ok {
-			commitedOffsets[key] = offset
+		offset, err := s.kv.ReadInt(context.Background(), "commited-"+key)
+
+		if err != nil {
+			offset = 0
 		}
+		commitedOffsets[key] = offset
 	}
 
 	return s.node.Reply(request, map[string]any{
@@ -146,7 +167,8 @@ func (s *server) handleListCommitedOffsets(request maelstrom.Message) error {
 
 func main() {
 	node := maelstrom.NewNode()
-	server := server{node: node, logs: make(map[string][]entry), commitedOffsets: make(map[string]int), lastOffsets: make(map[string]int)}
+	kv := maelstrom.NewLinKV(node)
+	server := server{node: node, kv: kv}
 
 	node.Handle("send", server.handleSend)
 	node.Handle("poll", server.handlePoll)
